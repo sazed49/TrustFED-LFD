@@ -1,0 +1,16 @@
+train: D:/Lab_PC_Backup/Spring 25/CS6604_Project-TrustFED-LFD/clients/client_1/images
+val: D:/Lab_PC_Backup/Spring 25/CS6604_Project-TrustFED-LFD/clients/client_1/images
+names:
+  0: emergency_exit
+  1: quarry_face
+  2: explosion_hazard
+  3: stop_authorized_only
+  4: keep_right
+  5: falling_rocks
+  6: keep_left
+  7: no_trespassing
+  8: wear_mask
+  9: wear_eye_glass
+  10: wear_ear_protection
+  11: wear_helmet
+  12: blasting_ahead

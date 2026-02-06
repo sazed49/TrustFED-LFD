@@ -23,6 +23,11 @@ alpha = 1):
         trainset, testset, tokenizer = get_imdb(num_peers = num_peers)
     elif dataset_name == 'GTSRB':
         trainset, testset = get_gtsrb()
+    elif dataset_name == "MineSigns":
+
+        trainset, testset = get_minesigns()
+
+
     if dd_type == 'IID':
         peers_data_dict = sample_dirichlet(trainset, num_peers, alpha=1000000)
     elif dd_type == 'NON_IID':
@@ -77,7 +82,18 @@ def get_gtsrb():
     trainset = GTSRBDataset(train_csv, root_dir, transform=transform)
     testset = GTSRBDataset(test_csv, root_dir, transform=transform)
     return trainset, testset
+def get_minesigns():
+    root = "S:/Summer25/MineDataset/Annotation_Done/MNIST_Format"  # has train/ and val/
 
+    transform = transforms.Compose([
+        transforms.Resize((32, 32)),
+        transforms.ToTensor(),
+    ])
+
+    trainset = ImageFolder(root + "/train", transform=transform)
+    testset  = ImageFolder(root + "/val",   transform=transform)
+
+    return trainset, testset
 
 
 #Get the IMDB data set
@@ -115,17 +131,21 @@ def get_imdb(num_peers = 10):
 
 def sample_dirichlet(dataset, num_users, alpha=1):
     classes = {}
-    for idx, x in enumerate(dataset):
-        _, label = x
-        if type(label) == torch.Tensor:
-            label = label.item()
-        if label in classes:
-            classes[label].append(idx)
-        else:
-            classes[label] = [idx]
+
+    # Fast path for ImageFolder-like datasets
+    if hasattr(dataset, "samples"):
+        labels = [s[1] for s in dataset.samples]
+        for idx, label in enumerate(labels):
+            classes.setdefault(label, []).append(idx)
+    else:
+        for idx in range(len(dataset)):
+            _, label = dataset[idx]
+            if isinstance(label, torch.Tensor):
+                label = int(label.item()) if label.numel() == 1 else int(label.view(-1)[0].item())
+            classes.setdefault(label, []).append(idx)
+
     num_classes = len(classes.keys())
-    
-    peers_data_dict = {i: {'data':np.array([]), 'labels':[]} for i in range(num_users)}
+    peers_data_dict = {i: {'data': np.array([]), 'labels': []} for i in range(num_users)}
 
     for n in range(num_classes):
         random.shuffle(classes[n])
@@ -134,13 +154,16 @@ def sample_dirichlet(dataset, num_users, alpha=1):
         for user in range(num_users):
             num_imgs = int(round(sampled_probabilities[user]))
             sampled_list = classes[n][:min(len(classes[n]), num_imgs)]
-            peers_data_dict[user]['data'] = np.concatenate((peers_data_dict[user]['data'], np.array(sampled_list)), axis=0)
+            peers_data_dict[user]['data'] = np.concatenate(
+                (peers_data_dict[user]['data'], np.array(sampled_list)), axis=0
+            )
             if num_imgs > 0:
                 peers_data_dict[user]['labels'].append((n, num_imgs))
-                
+
             classes[n] = classes[n][min(len(classes[n]), num_imgs):]
-   
+
     return peers_data_dict
+
 
 
 def sample_extreme(dataset, num_users, num_classes, classes_per_peer, samples_per_class):

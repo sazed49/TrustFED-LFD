@@ -9,7 +9,10 @@ from torchvision import transforms
 from PIL import Image
 import os
 import pandas as pd
-
+import os
+from torchvision.datasets import ImageFolder
+from torchvision import transforms
+from torch.utils.data import DataLoader
 class CustomDataset(data.Dataset):
     def __init__(self, dataset, indices, source_class = None, target_class = None):
         self.dataset = dataset
@@ -102,5 +105,94 @@ def get_gtsrb():
 
     trainset = GTSRBDataset(train_csv, root_dir)
     testset = GTSRBDataset(test_csv, root_dir)
+    return trainset, testset
+class MineSignsDataset(torch.utils.data.Dataset):
+    def __init__(self, img_dir, transform=None):
+        self.img_dir = img_dir
+        self.transform = transform
+        self.images = [f for f in os.listdir(img_dir) if f.endswith(".jpg")]
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+
+        img_name = self.images[idx]
+        img_path = os.path.join(self.img_dir, img_name)
+        label_path = img_path.replace(".jpg", ".txt")
+
+        image = Image.open(img_path).convert("RGB")
+        W, H = image.size
+
+        with open(label_path) as f:
+            line = f.readline().strip()
+            cls, xc, yc, w, h = map(float, line.split())
+
+        # Convert YOLO → pixel bbox
+        x1 = int((xc - w/2) * W)
+        y1 = int((yc - h/2) * H)
+        x2 = int((xc + w/2) * W)
+        y2 = int((yc + h/2) * H)
+
+        cropped = image.crop((x1, y1, x2, y2))
+
+        if self.transform:
+            cropped = self.transform(cropped)
+
+        return cropped, int(cls)
+class MineSignDataset2:
+
+        def __init__(self, root_dir, batch_size=32):
+
+            self.root_dir = root_dir
+            self.batch_size = batch_size
+
+            self.transform = transforms.Compose([
+            transforms.Resize((32, 32)),
+            transforms.ToTensor()
+        ])
+
+        def get_train_loader(self):
+
+            train_path = os.path.join(self.root_dir, "train")
+
+            train_dataset = ImageFolder(
+            root=train_path,
+            transform=self.transform
+        )
+
+            return DataLoader(
+            train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=2
+        )
+
+        def get_val_loader(self):
+
+            val_path = os.path.join(self.root_dir, "val")
+
+            val_dataset = ImageFolder(
+            root=val_path,
+            transform=self.transform
+        )
+
+            return DataLoader(
+            val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=2
+        )
+def get_minesigns():
+    root = "S:/Summer25/MineDataset/Annotation_Done/MNIST_Format"  # has train/ and val/
+
+    transform = transforms.Compose([
+        transforms.Resize((32, 32)),
+        transforms.ToTensor(),
+    ])
+
+    trainset = ImageFolder(root + "/train", transform=transform)
+    testset  = ImageFolder(root + "/val",   transform=transform)
+
     return trainset, testset
 

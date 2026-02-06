@@ -22,10 +22,38 @@ class CNNMNIST(nn.Module):
         x = F.dropout(x, training=self.training)
         x = self.fc2(x)
         return F.log_softmax(x, dim=1)
+class CNNMineSigns(nn.Module):
+    def __init__(self, num_classes=13):
+        super(CNNMineSigns, self).__init__()
+
+        self.conv1 = nn.Conv2d(3, 32, 3, padding=1)
+        self.pool1 = nn.MaxPool2d(2, 2)
+
+        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
+        self.pool2 = nn.MaxPool2d(2, 2)
+
+        self.conv3 = nn.Conv2d(64, 128, 3, padding=1)
+        self.pool3 = nn.MaxPool2d(2, 2)
+
+        self.fc1 = nn.Linear(128 * 4 * 4, 256)
+        self.fc2 = nn.Linear(256, num_classes)
+
+    def forward(self, x):
+
+        x = self.pool1(F.relu(self.conv1(x)))
+        x = self.pool2(F.relu(self.conv2(x)))
+        x = self.pool3(F.relu(self.conv3(x)))
+
+        x = x.view(x.size(0), -1)
+
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+
+        return x
 
 
 class CNNGTSRB(nn.Module):
-    def __init__(self, num_classes=43):
+    def __init__(self, num_classes=13):
         super(CNNGTSRB, self).__init__()
         self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)
         self.pool1 = nn.MaxPool2d(2, 2)
@@ -92,7 +120,8 @@ def setup_model(model_architecture, num_classes = None, tokenizer = None, embedd
             "VGG16" : tv.models.vgg16,
             "DN121": tv.models.densenet121,
             "SHUFFLENET":tv.models.shufflenet_v2_x1_0,
-            "CNNGTSRB": CNNGTSRB
+            "CNNGTSRB": CNNGTSRB,
+            "CNNMineSigns": CNNMineSigns
         }
         print('--> Creating {} model.....'.format(model_architecture))
         # variables in pre-trained ImageNet models are model-specific.
@@ -109,8 +138,11 @@ def setup_model(model_architecture, num_classes = None, tokenizer = None, embedd
             model.fc = nn.Linear(1024, num_classes)
         elif 'BiLSTM' in model_architecture:
              model = available_models[model_architecture](num_words =  len(tokenizer.word_index), embedding_dim = embedding_dim)
+        elif model_architecture == "CNNMineSigns":
+            model = available_models[model_architecture](num_classes=num_classes)
         else:
             model = available_models[model_architecture]()
+
 
         if model is None:
             print("Incorrect model architecture specified or architecture not available.")

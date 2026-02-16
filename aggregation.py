@@ -29,6 +29,243 @@ def get_pca(data, threshold = 0.99):
     return reduced_data
 
 eps = np.finfo(float).eps
+
+
+
+
+class RobustLFD_Optimized:
+    """
+    Faster RobustLFD:
+      - No sklearn KMeans
+      - No silhouette_score
+      - No huge flatten for clustering
+      - Uses small feature vector (4 dims) from top-2 suspicious classes
+      - Uses cheap 1D projection + median split for 2 clusters
+      - Vectorized weighted averaging (torch stack) to reduce Python overhead
+      - Uses robust-ish outlier rejection (median + MAD) instead of mean/std
+    """
+
+    def __init__(
+        self,
+        num_classes: int,
+        rejection_k: float = 3.5,      # how strict outlier rejection is (MAD scale)
+        memory_decay: float = 0.9,     # decay for memory accumulation
+        eps: float = 1e-12,
+        device: str = "cpu",
+    ):
+        self.memory = np.zeros([num_classes], dtype=np.float64)
+        self.rejection_k = rejection_k
+        self.memory_decay = memory_decay
+        self.eps = eps
+        self.device = device
+
+    @staticmethod
+    def _flatten_last_layer(W: torch.Tensor) -> torch.Tensor:
+        # W is typically [num_classes, hidden_dim] (FC weight)
+        return W.reshape(W.shape[0], -1)
+
+    def _robust_reject(self, dW: torch.Tensor) -> torch.Tensor:
+        """
+        dW: [m, C, H] (or [m, C, ...] after reshape)
+        Return: mask of valid clients (bool tensor of shape [m])
+        """
+        m = dW.shape[0]
+        flat = dW.reshape(m, -1)
+        norms = torch.norm(flat, dim=1)  # [m]
+
+        med = torch.median(norms)
+        mad = torch.median(torch.abs(norms - med)) + self.eps
+        thr = med + self.rejection_k * mad
+
+        valid = norms <= thr
+        return valid
+
+    def _select_top2_classes(self, dW: torch.Tensor, db: torch.Tensor) -> np.ndarray:
+        """
+        dW: [m, C, H]
+        db: [m, C]
+        Update memory and return indices of top-2 suspicious classes.
+        """
+        # per-class magnitude from weights + bias
+        # weights magnitude per class: sum over clients and hidden dims
+        dw_per_class = torch.sum(torch.abs(dW), dim=(0, 2)).detach().cpu().numpy()  # [C]
+        db_per_class = torch.sum(torch.abs(db), dim=0).detach().cpu().numpy()       # [C]
+
+        # decay + accumulate
+        self.memory = self.memory_decay * self.memory + (dw_per_class + db_per_class)
+
+        top2 = np.argsort(self.memory)[-2:]  # 2 classes
+        return top2
+
+    def _build_small_features(self, dW: torch.Tensor, top2: np.ndarray) -> torch.Tensor:
+        """
+        Build tiny feature vector per client using only 2 class-rows.
+        dW: [m, C, H]
+        top2: array([c1, c2])
+        Return X: [m, 4] on CPU (float32)
+        Features:
+          - L2 norm of row c1
+          - L2 norm of row c2
+          - mean abs of row c1
+          - mean abs of row c2
+        """
+        rows = dW[:, top2, :]  # [m, 2, H]
+        l2 = torch.norm(rows, dim=2)                 # [m, 2]
+        mean_abs = torch.mean(torch.abs(rows), dim=2)  # [m, 2]
+        X = torch.cat([l2, mean_abs], dim=1)         # [m, 4]
+        return X.to(torch.float32).cpu()
+
+    def _cheap_two_cluster_split(self, X: torch.Tensor) -> torch.Tensor:
+        """
+        X: [m, d] (CPU)
+        Return labels: [m] in {0,1} using projection+median split.
+        """
+        # direction = mean feature vector
+        u = torch.mean(X, dim=0)  # [d]
+        u_norm = torch.norm(u) + self.eps
+        u = u / u_norm
+
+        proj = X @ u  # [m]
+        thr = torch.median(proj)
+        labels = (proj > thr).to(torch.int64)
+        return labels
+
+    def _soft_scores_by_centroid(self, X: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """
+        X: [m, d] CPU
+        labels: [m] CPU {0,1}
+        Return scores: [m] CPU float32, exp(-dist_to_own_centroid)
+        """
+        m = X.shape[0]
+        scores = torch.ones(m, dtype=torch.float32)
+
+        idx0 = (labels == 0).nonzero(as_tuple=False).squeeze(-1)
+        idx1 = (labels == 1).nonzero(as_tuple=False).squeeze(-1)
+
+        # If a cluster is too small, fall back to uniform weights
+        if idx0.numel() < 2 or idx1.numel() < 2:
+            return scores
+
+        c0 = torch.mean(X[idx0], dim=0)
+        c1 = torch.mean(X[idx1], dim=0)
+
+        # distances to own centroid
+        d0 = torch.norm(X[idx0] - c0, dim=1)
+        d1 = torch.norm(X[idx1] - c1, dim=1)
+
+        scores[idx0] = torch.exp(-d0)
+        scores[idx1] = torch.exp(-d1)
+
+        # avoid all-zero / tiny sum
+        if torch.sum(scores) < self.eps:
+            scores = torch.ones_like(scores)
+
+        return scores
+
+    def _weighted_average_state_dicts(self, local_weights, scores: torch.Tensor):
+        """
+        local_weights: list of state_dict
+        scores: [m] CPU torch tensor
+        Return averaged state_dict
+        """
+        m = len(local_weights)
+        scores = scores.to(torch.float32)
+        total = torch.sum(scores) + self.eps
+
+        averaged = copy.deepcopy(local_weights[0])
+        # We will compute on CPU to avoid device mismatches in state_dict
+        for k in averaged.keys():
+            # Stack [m, ...]
+            stacked = torch.stack([local_weights[i][k].detach().cpu() for i in range(m)], dim=0)
+            # Broadcast scores: [m, 1, 1, ...]
+            view_shape = [m] + [1] * (stacked.dim() - 1)
+            wsum = torch.sum(stacked * scores.view(*view_shape), dim=0) / total
+            averaged[k] = wsum
+        return averaged
+
+    def aggr(self, global_model, local_models, ptypes=None):
+        """
+        Keeps same signature style as your RobustLFD.aggr.
+        Returns: new global weights (state_dict)
+        """
+        print("inside robust aggregate (optimized)")
+
+        # snapshot local weights for averaging later
+        local_weights = [copy.deepcopy(m).state_dict() for m in local_models]
+        m = len(local_models)
+        if m == 0:
+            raise ValueError("No local models provided.")
+
+        # Extract last layer params
+        # (Assumes last two parameters are FC weight and bias)
+        g_params = list(global_model.parameters())
+        gW = g_params[-2].detach()
+        gb = g_params[-1].detach()
+
+        # Build dW, db in torch
+        # Move to target device for fast math (default CPU; you can set "cuda" if available)
+        gW_t = gW.to(self.device)
+        gb_t = gb.to(self.device)
+
+        dW_list = []
+        db_list = []
+        for lm in local_models:
+            lp = list(lm.parameters())
+            lW = lp[-2].detach().to(self.device)
+            lb = lp[-1].detach().to(self.device)
+            dW_list.append(gW_t - lW)
+            db_list.append(gb_t - lb)
+
+        dW = torch.stack(dW_list, dim=0)  # [m, C, H]
+        db = torch.stack(db_list, dim=0)  # [m, C]
+
+        # 1) reject extreme updates (robust)
+        valid_mask = self._robust_reject(dW)  # [m] bool
+        valid_idx = valid_mask.nonzero(as_tuple=False).squeeze(-1).detach().cpu().numpy()
+
+        if len(valid_idx) < m:
+            print(f"Rejected {m - len(valid_idx)} clients for extreme gradients (MAD).")
+
+        # If too few remain, fall back to simple average
+        if len(valid_idx) < 2:
+            print("Too few valid clients. Using all clients with uniform weights.")
+            scores = torch.ones(m, dtype=torch.float32)
+            return self._weighted_average_state_dicts(local_weights, scores)
+
+        # filter tensors and weights
+        dW_v = dW[valid_mask]  # [mv, C, H]
+        db_v = db[valid_mask]  # [mv, C]
+        local_weights_v = [local_weights[i] for i in valid_idx.tolist()] if hasattr(valid_idx, "tolist") else [local_weights[i] for i in valid_idx]
+
+        mv = dW_v.shape[0]
+
+        # 2) choose top2 classes (only if multi-class)
+        if db_v.shape[1] > 2:
+            top2 = self._select_top2_classes(dW_v, db_v)
+            X = self._build_small_features(dW_v, top2)  # [mv,4]
+        else:
+            # binary: still build small features from both classes if possible
+            top2 = np.array([0, 1]) if db_v.shape[1] == 2 else np.array([0, 0])
+            if db_v.shape[1] >= 2:
+                X = self._build_small_features(dW_v, top2)  # [mv,4]
+            else:
+                # fallback: norm + meanabs of entire dW
+                flat = dW_v.reshape(mv, -1).detach().cpu()
+                X = torch.stack([torch.norm(flat, dim=1), torch.mean(torch.abs(flat), dim=1),
+                                 torch.norm(flat, dim=1), torch.mean(torch.abs(flat), dim=1)], dim=1)
+
+        # 3) cheap 2-cluster split (no KMeans)
+        labels = self._cheap_two_cluster_split(X)  # [mv]
+
+        # 4) soft scores within clusters
+        scores_v = self._soft_scores_by_centroid(X, labels)  # [mv]
+
+        # 5) weighted average only over valid clients
+        new_global = self._weighted_average_state_dicts(local_weights_v, scores_v)
+        return new_global
+
+
+
 class RobustLFD:
     def __init__(self, num_classes, rejection_threshold=2.5):
         self.memory = np.zeros([num_classes])

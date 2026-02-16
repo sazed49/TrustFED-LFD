@@ -280,6 +280,7 @@ class FL:
         print('\n===>Simulation started...')
         lfd = LFD(self.num_classes)
         robust_lfd = RobustLFD(self.num_classes)
+        optimized_robust_lfd=RobustLFD_Optimized(self.num_classes)
         fg = FoolsGold(self.num_peers)
         tolpegin = Tolpegin()
         # copy weights
@@ -398,7 +399,12 @@ class FL:
                 cur_time = time.time()
                 global_weights = robust_lfd.aggr(copy.deepcopy(simulation_model), copy.deepcopy(local_models), peers_types)
                 cpu_runtimes.append(time.time() - cur_time)
-            
+            elif rule == 'optimized_robutslfd':
+                print(" our aggregation")
+                cur_time = time.time()
+                global_weights = optimized_robust_lfd.aggr(copy.deepcopy(simulation_model), copy.deepcopy(local_models), peers_types)
+                cpu_runtimes.append(time.time() - cur_time)
+                print("aggregation time",cpu_runtimes)
             elif rule == 'fedavg':
                 cur_time = time.time()
                 global_weights = average_weights(local_weights, [1 for i in range(len(local_weights))])

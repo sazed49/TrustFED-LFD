@@ -1,15 +1,15 @@
-# TrustFED-LFD: Trust-Aware Label-Flip Detection in Federated Learning
+# TrustFED
 
-This repository provides the official PyTorch implementation of **TrustFED-LFD**, a robust federated learning framework designed to detect and defend against label-flipping attacks in both IID and non-IID environments.
+This repository provides the official PyTorch implementation of **TrustFED**, a robust federated learning framework designed to detect and defend against label-flipping attacks in both IID and non-IID environments.
 
 ## Paper
 
-[TrustFed-LFD: A Trust-Weighted Aggregation Method for Label-Flip Detection in Federated Learning for Underground Mining Security](#)  
+[Label-Flip Attack Detection via Trust-Weighted Aggregation in Federated Learning for Underground Mine Security](#)  
 (*Link will be updated upon publication*)
 
 ## Overview
 
-TrustFED-LFD introduces a novel trust-weighted aggregation mechanism that dynamically estimates the reliability of client updates based on the historical behavior of their gradient statistics and cluster-based proximity. It is capable of detecting malicious clients launching **label-flipping attacks** and ensures accurate model convergence even under severe data heterogeneity and adversarial presence.
+TrustFED introduces a novel trust-weighted aggregation mechanism that dynamically estimates the reliability of client updates based on the historical behavior of their gradient statistics and cluster-based proximity. It is capable of detecting malicious clients launching **label-flipping attacks** and ensures accurate model convergence even under severe data heterogeneity and adversarial presence.
 
 ## Datasets
 
@@ -17,7 +17,7 @@ The following datasets are supported and used in the experiments:
 
 - [MNIST](http://yann.lecun.com/exdb/mnist/) — Auto-downloads
 - [CIFAR10](https://www.cs.toronto.edu/~kriz/cifar.html) — Auto-downloads
-- [IMDB](https://ai.stanford.edu/~amaas/data/sentiment/) — Manual download required from [this link](https://drive.google.com/file/d/1CpT7RbswI-pGd4rVfWsgONf7qJQizON0/view?usp=sharing).  
+- [MineSigns]- Newly created dataset from an experimental Mine. The dataset will be made public after publication.  
   Please rename it to `imdb.csv` and place it inside the `data/IMDB/` directory.
 
 ## Running the Code
